@@ -1,0 +1,186 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+
+const mono = "'Space Mono', 'Courier New', monospace";
+const MAX_DIM = 1200;
+
+function Slider({ label, value, min, max, step = 1, onChange, display }) {
+  const trackRef = useRef(null);
+  const draggingRef = useRef(false);
+
+  const getVal = (clientX) => {
+    const rect = trackRef.current.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const raw = min + pct * (max - min);
+    const stepped = Math.round(raw / step) * step;
+    return Math.max(min, Math.min(max, parseFloat(stepped.toFixed(10))));
+  };
+
+  const onPointerDown = (e) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    trackRef.current.setPointerCapture(e.pointerId);
+    onChange(getVal(e.clientX));
+  };
+  const onPointerMove = (e) => { if (draggingRef.current) onChange(getVal(e.clientX)); };
+  const onPointerUp = () => { draggingRef.current = false; };
+
+  const pct = ((value - min) / (max - min)) * 100;
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <span style={{ fontFamily: mono, fontSize: 11, color: "#888", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
+        <span style={{ fontFamily: mono, fontSize: 11, color: "#e8e0d0" }}>{display !== undefined ? display : value}</span>
+      </div>
+      <div ref={trackRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+        style={{ position: "relative", height: 36, cursor: "ew-resize", display: "flex", alignItems: "center", touchAction: "none", userSelect: "none" }}>
+        <div style={{ position: "absolute", left: 0, right: 0, height: 2, background: "#2a2a2a", borderRadius: 2 }} />
+        <div style={{ position: "absolute", left: 0, width: `${pct}%`, height: 2, background: "#c8b96a", borderRadius: 2 }} />
+        <div style={{ position: "absolute", left: `${pct}%`, transform: "translateX(-50%)", width: 20, height: 20, borderRadius: "50%", background: "#c8b96a", border: "2px solid #0d0d0d", boxShadow: "0 0 0 1px #c8b96a", pointerEvents: "none" }} />
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [ready, setReady] = useState(false);
+  const [imageName, setImageName] = useState("");
+  const [stripeWidth, setStripeWidth] = useState(3);
+  const [blendZone, setBlendZone] = useState(40);
+  const [verticalOffset, setVerticalOffset] = useState(60);
+  const [noise, setNoise] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [status, setStatus] = useState("");
+  const [saveUrl, setSaveUrl] = useState(null);
+
+  const canvasRef = useRef(null);
+  const sourceRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const timerRef = useRef(null);
+  const paramsRef = useRef({ stripeWidth, blendZone, verticalOffset, noise });
+
+  useEffect(() => {
+    paramsRef.current = { stripeWidth, blendZone, verticalOffset, noise };
+  }, [stripeWidth, blendZone, verticalOffset, noise]);
+
+  const processImage = useCallback(() => {
+    const canvas = canvasRef.current;
+    const src = sourceRef.current;
+    if (!canvas || !src) return;
+    const { stripeWidth, blendZone, verticalOffset, noise } = paramsRef.current;
+    const W = src.width, H = src.height;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(src, 0, 0);
+    const srcData = ctx.getImageData(0, 0, W, H).data;
+    const outData = ctx.createImageData(W, H);
+    const out = outData.data;
+    const sampleY = Math.min(Math.floor((verticalOffset / 100) * H), H - 1);
+    const blendRows = Math.floor((blendZone / 100) * H);
+    const halfW = Math.max(0, Math.floor(stripeWidth / 2));
+    const noiseAmp = noise * 60;
+    for (let x = 0; x < W; x++) {
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let sx = Math.max(0, x - halfW); sx <= Math.min(W - 1, x + halfW); sx++) {
+        const i = (sampleY * W + sx) * 4;
+        r += srcData[i]; g += srcData[i+1]; b += srcData[i+2]; count++;
+      }
+      r /= count; g /= count; b /= count;
+      for (let y = 0; y < H; y++) {
+        const oi = (y * W + x) * 4;
+        const blend = y < blendRows ? 1 - y / blendRows : 0;
+        const n = noiseAmp > 0 ? (Math.random() - 0.5) * noiseAmp : 0;
+        out[oi]   = Math.max(0, Math.min(255, Math.round(blend * srcData[oi]   + (1-blend) * (r+n))));
+        out[oi+1] = Math.max(0, Math.min(255, Math.round(blend * srcData[oi+1] + (1-blend) * (g+n))));
+        out[oi+2] = Math.max(0, Math.min(255, Math.round(blend * srcData[oi+2] + (1-blend) * (b+n))));
+        out[oi+3] = 255;
+      }
+    }
+    ctx.putImageData(outData, 0, 0);
+    setStatus("");
+  }, []);
+
+  useEffect(() => { if (ready) processImage(); }, [ready, processImage]);
+  useEffect(() => {
+    if (!ready) return;
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(processImage, 80);
+  }, [stripeWidth, blendZone, verticalOffset, noise, ready, processImage]);
+
+  const loadFile = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setStatus("Not an image file"); return; }
+    setStatus("Loading…"); setReady(false); setImageName(file.name);
+    const reader = new FileReader();
+    reader.onerror = () => setStatus("Failed to read file");
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => setStatus("Failed to decode image");
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (w > MAX_DIM || h > MAX_DIM) { const s = MAX_DIM / Math.max(w,h); w = Math.round(w*s); h = Math.round(h*s); }
+        const off = document.createElement("canvas");
+        off.width = w; off.height = h;
+        off.getContext("2d").drawImage(img, 0, 0, w, h);
+        sourceRef.current = off;
+        setStatus("Processing…"); setReady(true);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d0d0d", color: "#e8e0d0", fontFamily: mono, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "14px 18px", borderBottom: "1px solid #222", display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "#c8b96a" }}>GLITCH//STRIPE</span>
+        <span style={{ fontSize: 10, color: "#444" }}>rolling shutter emulator</span>
+        {status && <span style={{ fontSize: 10, color: "#c8b96a", marginLeft: "auto" }}>{status}</span>}
+      </div>
+      <div style={{ padding: "16px 18px", borderBottom: "1px solid #1a1a1a", background: "#0a0a0a" }}>
+        <div onClick={() => fileInputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(e) => { e.preventDefault(); setIsDragging(false); loadFile(e.dataTransfer.files[0]); }}
+          style={{ border: `1px dashed ${isDragging ? "#c8b96a" : "#2a2a2a"}`, borderRadius: 4, padding: "14px 12px", textAlign: "center", cursor: "pointer", marginBottom: 20, background: isDragging ? "#1a180e" : "transparent" }}>
+          <div style={{ fontSize: 10, color: imageName ? "#c8b96a" : "#444", letterSpacing: "0.1em" }}>
+            {imageName ? `✓ ${imageName}` : "TAP TO LOAD IMAGE"}
+          </div>
+        </div>
+        <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }}
+          onChange={(e) => { if (e.target.files[0]) loadFile(e.target.files[0]); }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 28px" }}>
+          <Slider label="Stripe Width" value={stripeWidth} min={1} max={20} step={1} onChange={setStripeWidth} />
+          <Slider label="Sample Row" value={verticalOffset} min={0} max={100} step={1} onChange={setVerticalOffset} display={`${verticalOffset}%`} />
+          <Slider label="Blend Zone" value={blendZone} min={0} max={80} step={1} onChange={setBlendZone} display={`${blendZone}%`} />
+          <Slider label="Noise" value={noise} min={0} max={1} step={0.01} onChange={setNoise} display={noise.toFixed(2)} />
+        </div>
+        {ready && (
+          <button onClick={() => setSaveUrl(canvasRef.current.toDataURL("image/png"))}
+            style={{ width: "100%", marginTop: 8, padding: "11px 0", background: "#c8b96a", color: "#0d0d0d", border: "none", borderRadius: 3, fontFamily: mono, fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", fontWeight: "bold" }}>
+            Save Image
+          </button>
+        )}
+      </div>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, minHeight: 200 }}>
+        {!ready ? (
+          <div style={{ textAlign: "center", color: "#222" }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>▓▓▓▒▒░░</div>
+            <div style={{ fontSize: 10, letterSpacing: "0.15em" }}>LOAD AN IMAGE TO BEGIN</div>
+          </div>
+        ) : (
+          <canvas ref={canvasRef} style={{ maxWidth: "100%", maxHeight: "55vh", display: "block" }} />
+        )}
+      </div>
+      {saveUrl && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.93)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 24 }}>
+          <div style={{ fontFamily: mono, fontSize: 10, color: "#c8b96a", letterSpacing: "0.12em", marginBottom: 14, textTransform: "uppercase", textAlign: "center" }}>
+            Long-press the image → Save to Photos
+          </div>
+          <img src={saveUrl} alt="result" style={{ maxWidth: "100%", maxHeight: "68vh", display: "block", borderRadius: 2 }} />
+          <button onClick={() => setSaveUrl(null)} style={{ marginTop: 20, padding: "10px 28px", background: "transparent", color: "#555", border: "1px solid #2a2a2a", borderRadius: 3, fontFamily: mono, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", cursor: "pointer" }}>Close</button>
+        </div>
+      )}
+    </div>
+  );
+}
